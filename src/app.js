@@ -1,7 +1,9 @@
+
 require("sdk/libs/strophe");
 let WebIM = require("utils/WebIM")["default"];
 let msgStorage = require("comps/chat/msgstorage");
 let msgType = require("comps/chat/msgtype");
+let ToastPannel = require("./comps/toast/toast");
 let disp = require("utils/broadcast");
 
 function ack(receiveMsg){
@@ -31,37 +33,54 @@ function getCurrentRoute(){
 	return currentPage.route;
 }
 
-function calcUnReadSpot(){
+function calcUnReadSpot(message){
 	let myName = wx.getStorageSync("myUsername");
-	let members = wx.getStorageSync("member") || [];
-	let count = members.reduce(function(result, curMember, idx){
-		let chatMsgs = wx.getStorageSync(curMember.name + myName) || [];
+	let members = wx.getStorageSync("member") || []; //好友
+	var listGroups = wx.getStorageSync('listGroup')|| []; //群组
+	let allMembers = members.concat(listGroups)
+	let count = allMembers.reduce(function(result, curMember, idx){
+		let chatMsgs;
+		if (curMember.roomId) {
+			chatMsgs = wx.getStorageSync(curMember.roomId + myName.toLowerCase()) || [];
+		}else{
+			chatMsgs = wx.getStorageSync(curMember.name.toLowerCase() + myName.toLowerCase()) || [];
+		}
+		
 		return result + chatMsgs.length;
 	}, 0);
-	getApp().globalData.unReadSpot = count > 0;
-	disp.fire("em.xmpp.unreadspot", count);
+	getApp().globalData.unReadMessageNum = count;
+	disp.fire("em.xmpp.unreadspot", message);
 }
 
 App({
+	ToastPannel,
 	globalData: {
-		unReadSpot: false,
+		unReadMessageNum: 0,
 		userInfo: null,
-		saveFriendList: []
+		saveFriendList: [],
+		saveGroupInvitedList: [],
+		isIPX: false //是否为iphone X
 	},
 
 	conn: {
 		closed: false,
 		curOpenOpt: {},
 		open(opt){
+			wx.showLoading({
+			  	title: '正在初始化客户端...',
+			  	mask: true
+			})
 			this.curOpenOpt = opt;
 			WebIM.conn.open(opt);
 			this.closed = false;
 		},
 		reopen(){
 			if(this.closed){
-				this.open(this.curOpenOpt);
+				//this.open(this.curOpenOpt);
+				WebIM.conn.open(this.curOpenOpt);
+				this.closed = false;
 			}
-		},
+		}
 	},
 
 	// getPage(pageName){
@@ -77,6 +96,7 @@ App({
 		var logs = wx.getStorageSync("logs") || [];
 		logs.unshift(Date.now());
 		wx.setStorageSync("logs", logs);
+
 
 		// 
 		disp.on("em.main.ready", function(){
@@ -95,29 +115,29 @@ App({
 		// 
 		WebIM.conn.listen({
 			onOpened(message){
-				console.log("onOpened", message);
 				WebIM.conn.setPresence();
-				if(getCurrentRoute() == "pages/login/login"){
-					me.onLoginSuccess(wx.getStorageSync("myUsername"));
+				if(getCurrentRoute() == "pages/login/login" || getCurrentRoute() == "pages/login_token/login_token"){
+					me.onLoginSuccess(wx.getStorageSync("myUsername").toLowerCase());
 				}
 			},
 			onClosed(){
 				me.conn.closed = true;
 			},
 			onInviteMessage(message){
-				console.log("onInviteMessage", message);
-				wx.showModal({
-					title: message.from + " 已邀你入群 " + message.roomid,
-					success(){
-						disp.fire("em.xmpp.invite.joingroup", message);
-					},
-					error(){
-						disp.fire("em.xmpp.invite.joingroup", message);
-					}
-				});
+				me.globalData.saveGroupInvitedList.push(message);
+				disp.fire("em.xmpp.invite.joingroup", message);
+				// wx.showModal({
+				// 	title: message.from + " 已邀你入群 " + message.roomid,
+				// 	success(){
+				// 		disp.fire("em.xmpp.invite.joingroup", message);
+				// 	},
+				// 	error(){
+				// 		disp.fire("em.xmpp.invite.joingroup", message);
+				// 	}
+				// });
 			},
 			onPresence(message){
-				console.log("onPresence", message);
+				//console.log("onPresence", message);
 				switch(message.type){
 				case "unsubscribe":
 					// pages[0].moveFriend(message);
@@ -188,7 +208,6 @@ App({
 			},
 
 			onRoster(message){
-				console.log("onRoster", message);
 				// let pages = getCurrentPages();
 				// if(pages[0]){
 				// 	pages[0].onShow();
@@ -208,7 +227,7 @@ App({
 					if(onMessageError(message)){
 						msgStorage.saveReceiveMsg(message, msgType.AUDIO);
 					}
-					//calcUnReadSpot();
+					calcUnReadSpot(message);
 					ack(message);
 				}
 			},
@@ -219,7 +238,7 @@ App({
 					if(onMessageError(message)){
 						msgStorage.saveReceiveMsg(message, msgType.CMD);
 					}
-					calcUnReadSpot();
+					calcUnReadSpot(message);
 					ack(message);
 				}
 			},
@@ -237,7 +256,7 @@ App({
 					if(onMessageError(message)){
 						msgStorage.saveReceiveMsg(message, msgType.TEXT);
 					}
-					calcUnReadSpot();
+					calcUnReadSpot(message);
 					ack(message);
 				}
 			},
@@ -248,7 +267,7 @@ App({
 					if(onMessageError(message)){
 						msgStorage.saveReceiveMsg(message, msgType.EMOJI);
 					}
-					calcUnReadSpot();
+					calcUnReadSpot(message);
 					ack(message);
 				}
 			},
@@ -259,14 +278,28 @@ App({
 					if(onMessageError(message)){
 						msgStorage.saveReceiveMsg(message, msgType.IMAGE);
 					}
-					calcUnReadSpot();
+					calcUnReadSpot(message);
+					ack(message);
+				}
+			},
+
+			onFileMessage(message){
+				console.log('onFileMessage', message);
+				if (message) {
+					if(onMessageError(message)){
+						msgStorage.saveReceiveMsg(message, msgType.FILE);
+					}
+					calcUnReadSpot(message);
 					ack(message);
 				}
 			},
 
 			// 各种异常
 			onError(error){
+
 				// 16: server-side close the websocket connection
+				console.log(error)
+
 				if(error.type == WebIM.statusCode.WEBIM_CONNCTION_DISCONNECTED){
 					if(WebIM.conn.autoReconnectNumTotal < WebIM.conn.autoReconnectNumMax){
 						return;
@@ -291,30 +324,31 @@ App({
 					});
 				}
 				if(error.type ==  WebIM.statusCode.WEBIM_CONNCTION_OPEN_ERROR){
-					wx.showModal({
-						title: "用户名或密码错误",
-						confirmText: "OK",
-						showCancel: false
-					});
+					wx.hideLoading()
+					disp.fire("em.xmpp.error.passwordErr");
+					// wx.showModal({
+					// 	title: "用户名或密码错误",
+					// 	confirmText: "OK",
+					// 	showCancel: false
+					// });
+				}
+				if (error.type == WebIM.statusCode.WEBIM_CONNCTION_AUTH_ERROR) {
+					wx.hideLoading()
+					disp.fire("em.xmpp.error.tokenErr");
 				}
 			},
 		});
+		this.checkIsIPhoneX();
 	},
 	onShow(){
 		this.conn.reopen();
 	},
 
 	onLoginSuccess: function(myName){
-		wx.showToast({
-			title: "登录成功",
-			icon: "success",
-			duration: 1000
+		wx.hideLoading()
+		wx.redirectTo({
+			url: "../chat/chat?myName=" + myName
 		});
-		setTimeout(function(){
-			wx.redirectTo({
-				url: "../main/main?myName=" + myName
-			});
-		}, 1000);
 	},
 
 	getUserInfo(cb){
@@ -335,6 +369,17 @@ App({
 				}
 			});
 		}
+	},
+	checkIsIPhoneX: function() {
+	    const me = this
+	    wx.getSystemInfo({
+	      	success: function (res) {
+		        // 根据 model 进行判断
+		        if (res.model.search('iPhone X') != -1) {
+		          	me.globalData.isIPX = true
+		        }
+	      	}
+	    })
 	},
 
 });
